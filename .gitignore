@@ -1,0 +1,28 @@
+# Dependencies
+node_modules/
+dist/
+
+# Local env files
+.env
+.env*.local
+
+# Database files
+veri/*.sqlite
+veri/*.sqlite-journal
+veri/*.sqlite-wal
+veri/*.sqlite-shm
+
+# IDEs
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Agent files
+brain/
+scratch/
+logs/
+*.log
