@@ -126,11 +126,14 @@ function OgrenciPlanlayici({ user }) {
     const isAfter18 = time.start >= 1080; // 18:00
     if (!isAfter18) return false;
 
-    // S-9'dan S-15'e kadar akşam dersi var mı kontrol et
+    // 18:00 sonrası slotlar SADECE o günde akşam dersi VARSA kapatılır
+    // (öğrenci o saatte derse giriyor demek). Akşam dersi yoksa birim
+    // saatleri içinde olduğu sürece seçilebilir.
     const hasEveningClasses = ['S-9', 'S-10', 'S-11', 'S-12', 'S-13', 'S-14', 'S-15'].some(
       sId => courseMatrix?.[day]?.[sId] === true
     );
-    return !hasEveningClasses;
+    // Akşam DERS varsa → o slotu kapat (çakışma var)
+    return hasEveningClasses;
   };
 
   const isSlotInDeptHours = (slotId) => {
@@ -152,6 +155,7 @@ function OgrenciPlanlayici({ user }) {
       if (!time) return false;
       const inHours = open === null || close === null || (time.start >= open && time.end <= close);
       const isFree = courseMatrix?.[day]?.[slot.id] !== true;
+      // Akşam kuralı: o slotta gerçekten ders varsa dışla
       const blockedByEvening = isSlotBlockedByEveningRule(day, slot.id);
       return inHours && isFree && !blockedByEvening;
     }).map(s => s.id);
