@@ -120,22 +120,6 @@ function OgrenciPlanlayici({ user }) {
     return courseMatrix?.[day]?.[slotId] !== true;
   };
 
-  const isSlotBlockedByEveningRule = (day, slotId) => {
-    const time = SLOT_TIMES[slotId];
-    if (!time) return false;
-    const isAfter18 = time.start >= 1080; // 18:00
-    if (!isAfter18) return false;
-
-    // 18:00 sonrası slotlar SADECE o günde akşam dersi VARSA kapatılır
-    // (öğrenci o saatte derse giriyor demek). Akşam dersi yoksa birim
-    // saatleri içinde olduğu sürece seçilebilir.
-    const hasEveningClasses = ['S-9', 'S-10', 'S-11', 'S-12', 'S-13', 'S-14', 'S-15'].some(
-      sId => courseMatrix?.[day]?.[sId] === true
-    );
-    // Akşam DERS varsa → o slotu kapat (çakışma var)
-    return hasEveningClasses;
-  };
-
   const isSlotInDeptHours = (slotId) => {
     if (!department) return true;
     const open = timeToMinutes(department.open_time);
@@ -155,9 +139,7 @@ function OgrenciPlanlayici({ user }) {
       if (!time) return false;
       const inHours = open === null || close === null || (time.start >= open && time.end <= close);
       const isFree = courseMatrix?.[day]?.[slot.id] !== true;
-      // Akşam kuralı: o slotta gerçekten ders varsa dışla
-      const blockedByEvening = isSlotBlockedByEveningRule(day, slot.id);
-      return inHours && isFree && !blockedByEvening;
+      return inHours && isFree;
     }).map(s => s.id);
 
     const maxHours = calculateDailyHours(freeSlots);
@@ -167,7 +149,6 @@ function OgrenciPlanlayici({ user }) {
   const slotDegistir = (gun, slotId) => {
     if (!isDaySelectable(gun)) return;
     if (!isSlotInDeptHours(slotId)) return;
-    if (isSlotBlockedByEveningRule(gun, slotId)) return;
     const yeniSecili = { ...seciliSlotlar };
     if (!yeniSecili[gun]) yeniSecili[gun] = [];
 
@@ -332,8 +313,6 @@ function OgrenciPlanlayici({ user }) {
                   const onayliMi = onayliHucreMi(gun, slot.id);
                   const inDeptHours = isSlotInDeptHours(slot.id);
 
-                  const blockedByEveningRule = isSlotBlockedByEveningRule(gun, slot.id);
-
                   if (!musait) {
                     return (
                       <div 
@@ -346,12 +325,12 @@ function OgrenciPlanlayici({ user }) {
                     );
                   }
 
-                  if (!inDeptHours || blockedByEveningRule) {
+                  if (!inDeptHours) {
                     return (
                       <div 
                         key={`${gun}-${slot.id}`} 
                         className="h-12 rounded-2xl bg-slate-100 border border-slate-200/40 select-none flex items-center justify-center text-slate-400 font-extrabold text-[8px] uppercase tracking-wider text-center"
-                        title={blockedByEveningRule ? "Akşam dersi olmayan günlerde 18:00 sonrası çalışılamaz." : "Birim Kapalı"}
+                        title="Birim Kapalı"
                       >
                         Kapalı
                       </div>

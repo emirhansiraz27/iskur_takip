@@ -1021,36 +1021,9 @@ app.post('/api/plan/student', authenticateToken, authorizeRole('student'), (req,
         return sendResponse(res, false, null, 'Her seçilen gün tam 7.5 saat olmalıdır. Toplam 7.5, 15 veya 22.5 saat çalışılabilir.', 400);
     }
     
-    // Ders programı matrisini kontrol ederek 18:00 sonrası kısıtlamasını doğrula
-    db.get("SELECT name, course_schedule_matrix FROM users WHERE id = ?", [req.user.id], (err, userRow) => {
+    db.get("SELECT name FROM users WHERE id = ?", [req.user.id], (err, userRow) => {
         if (err || !userRow) {
             return sendResponse(res, false, null, 'Kullanıcı bulunamadı.', 404);
-        }
-        let matrix = {};
-        try {
-            matrix = typeof userRow.course_schedule_matrix === 'string'
-                ? JSON.parse(userRow.course_schedule_matrix || '{}')
-                : (userRow.course_schedule_matrix || {});
-        } catch (e) {
-            matrix = {};
-        }
-
-        // Akşam dersi olmayan günde 18:00 sonrası engelleme doğrulaması
-        for (const item of activePlanDays) {
-            const day = item.day;
-            const slots = item.slots;
-            const hasSlotAfter18 = slots.some(slotId => {
-                const time = SLOT_TIMES[slotId];
-                return time && time.start >= 1080;
-            });
-            if (hasSlotAfter18) {
-                const hasMorningClasses = ['S-1', 'S-2', 'S-3', 'S-4', 'S-5', 'S-6', 'S-7', 'S-8'].some(
-                    sId => matrix?.[day]?.[sId] === true
-                );
-                if (!hasMorningClasses) {
-                    return sendResponse(res, false, null, `${day} günü gündüz dersiniz olmadığı (boş gün veya akşam öğrencisi olduğunuz) için saat 18:00'den sonrası için planlama yapamazsınız.`, 400);
-                }
-            }
         }
 
         db.serialize(async () => {
