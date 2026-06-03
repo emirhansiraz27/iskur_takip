@@ -61,10 +61,10 @@ function Uygulama() {
   const [managerEmail, setManagerEmail] = useState('');
   const [initialUsersFilter, setInitialUsersFilter] = useState('all');
 
-  const handleNavigate = (targetTab) => {
+  const handleNavigate = (targetTab, filterVal = null) => {
     setActiveTab(targetTab);
     if (targetTab === 'students-admin') {
-      setInitialUsersFilter('approved');
+      setInitialUsersFilter(filterVal || 'approved');
     }
   };
 

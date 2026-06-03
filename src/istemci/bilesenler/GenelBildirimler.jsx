@@ -149,7 +149,15 @@ function GenelBildirimler({ user, onNavigate }) {
 
     const target = hedefBelirle(notif);
     if (target && onNavigate) {
-      onNavigate(target);
+      if (target === 'students-admin') {
+        const isPending = notif.type === 'student_registered' || 
+                          notif.type === 'student_revision_submitted' || 
+                          (notif.message && notif.message.toLowerCase().includes('yeni kayıt')) ||
+                          (notif.message && notif.message.toLowerCase().includes('düzelt'));
+        onNavigate(target, isPending ? 'pending' : 'approved');
+      } else {
+        onNavigate(target);
+      }
       setIsOpen(false);
     }
   };

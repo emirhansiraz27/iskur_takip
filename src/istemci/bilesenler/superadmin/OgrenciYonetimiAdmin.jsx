@@ -77,7 +77,11 @@ function OgrenciYonetimiAdmin({ initialFilter = 'all', onClearFilter }) {
   useEffect(() => {
     if (initialFilter && initialFilter !== 'all') {
       setStatusFilter(initialFilter);
-      setActiveSubTab('students');
+      if (initialFilter === 'pending') {
+        setActiveSubTab('queue');
+      } else {
+        setActiveSubTab('students');
+      }
       onClearFilter?.();
     }
   }, [initialFilter]);
