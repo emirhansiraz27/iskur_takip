@@ -850,9 +850,12 @@ app.delete('/api/announcements/:id', authenticateToken, authorizeRole('manager')
 app.get('/api/tasks', authenticateToken, (req, res) => {
     const deptId = Number(req.user.dept_id);
     const sql = req.user.role === 'student'
-        ? "SELECT * FROM tasks WHERE assigned_to = ? OR assigned_to IS NULL ORDER BY created_at DESC"
+        ? "SELECT * FROM tasks WHERE assigned_to = ? OR (dept_id = ? AND assigned_to IS NULL) ORDER BY created_at DESC"
         : "SELECT t.*, u.name as student_name, d.name as origin_dept_name FROM tasks t LEFT JOIN users u ON t.assigned_to = u.id LEFT JOIN departments d ON t.dept_id = d.id WHERE t.dept_id = ? OR u.dept_id = ? ORDER BY COALESCE(t.updated_at, t.created_at) DESC";
-    db.all(sql, [req.user.role === 'student' ? req.user.id : deptId, req.user.role === 'student' ? null : deptId], (err, rows) => sendResponse(res, true, { tasks: rows }));
+    const params = req.user.role === 'student'
+        ? [req.user.id, req.user.dept_id]
+        : [deptId, deptId];
+    db.all(sql, params, (err, rows) => sendResponse(res, true, { tasks: rows }));
 });
 
 app.post('/api/tasks', authenticateToken, authorizeRole('manager'), (req, res) => {
