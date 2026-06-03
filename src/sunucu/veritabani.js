@@ -70,27 +70,21 @@ const db = {
       finalSql += ' RETURNING id';
     }
 
-    queryQueue = queryQueue.then(() => {
-      return new Promise((resolve) => {
-        pool.query(finalSql, params || [], (err, result) => {
-          if (err) {
-            console.error("❌ SQL execution error:", err.message, "\nSQL:", finalSql);
-            if (callback) callback(err);
-            resolve();
-            return;
-          }
+    pool.query(finalSql, params || [], (err, result) => {
+      if (err) {
+        console.error("❌ SQL execution error:", err.message, "\nSQL:", finalSql);
+        if (callback) callback(err);
+        return;
+      }
 
-          const context = {
-            lastID: isInsert && result.rows && result.rows[0] ? result.rows[0].id : null,
-            changes: result.rowCount
-          };
+      const context = {
+        lastID: isInsert && result.rows && result.rows[0] ? result.rows[0].id : null,
+        changes: result.rowCount
+      };
 
-          if (callback) {
-            callback.call(context, null);
-          }
-          resolve();
-        });
-      });
+      if (callback) {
+        callback.call(context, null);
+      }
     });
   },
 
@@ -102,22 +96,16 @@ const db = {
 
     const convertedSql = convertSql(sql);
 
-    queryQueue = queryQueue.then(() => {
-      return new Promise((resolve) => {
-        pool.query(convertedSql, params || [], (err, result) => {
-          if (err) {
-            console.error("❌ SQL get error:", err.message, "\nSQL:", convertedSql);
-            if (callback) callback(err);
-            resolve();
-            return;
-          }
+    pool.query(convertedSql, params || [], (err, result) => {
+      if (err) {
+        console.error("❌ SQL get error:", err.message, "\nSQL:", convertedSql);
+        if (callback) callback(err);
+        return;
+      }
 
-          if (callback) {
-            callback(null, result.rows[0] || null);
-          }
-          resolve();
-        });
-      });
+      if (callback) {
+        callback(null, result.rows[0] || null);
+      }
     });
   },
 
@@ -129,22 +117,16 @@ const db = {
 
     const convertedSql = convertSql(sql);
 
-    queryQueue = queryQueue.then(() => {
-      return new Promise((resolve) => {
-        pool.query(convertedSql, params || [], (err, result) => {
-          if (err) {
-            console.error("❌ SQL all error:", err.message, "\nSQL:", convertedSql);
-            if (callback) callback(err);
-            resolve();
-            return;
-          }
+    pool.query(convertedSql, params || [], (err, result) => {
+      if (err) {
+        console.error("❌ SQL all error:", err.message, "\nSQL:", convertedSql);
+        if (callback) callback(err);
+        return;
+      }
 
-          if (callback) {
-            callback(null, result.rows || []);
-          }
-          resolve();
-        });
-      });
+      if (callback) {
+        callback(null, result.rows || []);
+      }
     });
   },
 

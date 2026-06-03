@@ -11,6 +11,9 @@
     "preview": "vite preview",
     "server": "node src/sunucu/sunucu.js",
     "betik:tohum": "node betikler/ornek-veri.js",
+    "betik:tohum:supabase": "node betikler/ornek-veri-supabase.js",
+    "betik:tohum:yeni": "node betikler/ornek-veri-yeni.js",
+    "betik:tohum:yeni:supabase": "node betikler/ornek-veri-yeni-supabase.js",
     "make-logo-transparent": "node betikler/make-logo-transparent.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },

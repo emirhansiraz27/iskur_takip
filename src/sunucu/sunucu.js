@@ -10,6 +10,20 @@ const PORT = 3000;
 const HOST = '0.0.0.0';
 const SECRET_KEY = process.env.JWT_SECRET || 'iskr-gizli-anahtar-2026';
 
+const getDatePart = (val) => {
+  if (!val) return '2000-01-01';
+  if (val instanceof Date) {
+    const y = val.getFullYear();
+    const m = String(val.getMonth() + 1).padStart(2, '0');
+    const d = String(val.getDate()).padStart(2, '0');
+    return `${y}-${m}-${d}`;
+  }
+  if (typeof val === 'string') {
+    return val.split(' ')[0].split('T')[0];
+  }
+  return '2000-01-01';
+};
+
 app.use(cors());
 app.use(express.json({ limit: '100mb' }));
 app.use(express.urlencoded({ limit: '100mb', extended: true }));
@@ -70,6 +84,37 @@ const validateCourseScheduleMatrix = (matrix) => {
     return { valid: true };
 };
 
+// BİRİM SAATLERİNİN 7.5 SAATİ (8 SLOT) KARŞILADIĞINI DOĞRULAMA
+const validateDepartmentHours = (openTime, closeTime) => {
+    if (!openTime || !closeTime) {
+        return { valid: false, error: 'Açılış ve kapanış saatleri gereklidir.' };
+    }
+    const timeToMinutes = (timeStr) => {
+        const [h, m] = timeStr.split(':').map(Number);
+        return h * 60 + m;
+    };
+    const open = timeToMinutes(openTime);
+    const close = timeToMinutes(closeTime);
+    if (open >= close) {
+        return { valid: false, error: 'Kapanış saati açılış saatinden sonra olmalıdır.' };
+    }
+
+    let slotCount = 0;
+    Object.values(SLOT_TIMES).forEach(time => {
+        if (time.start >= open && time.end <= close) {
+            slotCount++;
+        }
+    });
+
+    if (slotCount < 8) {
+        return { 
+            valid: false, 
+            error: `Birim çalışma saatleri günlük en az 7.5 saatlik (8 ders saati) çalışma dilimini kapsamalıdır. Seçtiğiniz aralıkta en fazla ${slotCount} ders saati (yani ${(slotCount * 0.9375).toFixed(2)} saat) çalışılabilir.` 
+        };
+    }
+    return { valid: true };
+};
+
 // IBAN DOĞRULAMA (TR Checksum)
 const validateIBAN = (iban) => {
     if (!iban) return true; // Opsiyonel olabilir
@@ -113,22 +158,12 @@ const createNotification = (userId, type, title, body, entityType = null, entity
 // ---------------------------------------------------------
 // 🛠️ İSTATİSTİK MOTORU
 // ---------------------------------------------------------
-const getStudentAnalytics = async (studentId) => {
+const calculateStudentStats = (plans, attendance, userCreatedAt, holidays) => {
     const trGunler = ['Pazar', 'Pazartesi', 'Salı', 'Çarşamba', 'Perşembe', 'Cuma', 'Cumartesi'];
-    
-    const [plans, attendance, user, holidayRows] = await Promise.all([
-        new Promise(resolve => db.all("SELECT day FROM fixed_plan WHERE user_id = ? AND status = 'approved'", [studentId], (err, rows) => resolve(rows || []))),
-        new Promise(resolve => db.all("SELECT date, status FROM attendance WHERE user_id = ? AND date >= '2026-01-01'", [studentId], (err, rows) => resolve(rows || []))),
-        new Promise(resolve => db.get("SELECT created_at FROM users WHERE id = ?", [studentId], (err, row) => resolve(row))),
-        new Promise(resolve => db.all("SELECT date FROM holidays", [], (err, rows) => resolve(rows || [])))
-    ]);
-
-    const holidays = holidayRows.map(h => h.date);
     const pDays = (plans || []).map(p => (p.day || '').trim().toLowerCase());
     const attMap = {}; 
     let attended = 0;
     let absent = 0;
-    const absentDates = []; // Hangi günlerin devamsızlık yazıldığını takip et
 
     (attendance || []).forEach(a => {
         attMap[a.date] = a.status;
@@ -136,33 +171,25 @@ const getStudentAnalytics = async (studentId) => {
 
     const projectStartDate = '2026-02-01';
 
-    // Sadece benzersiz günler (son durum) üzerinden say
     Object.entries(attMap).forEach(([date, status]) => {
-        // Proje başlangıcından önceki (Ocak ayı vb.) çok eski test verilerini atla
         if (date < projectStartDate) return;
 
         if (['completed', 'present', 'attended', 'working'].includes(status)) {
             attended++;
         } else if (status === 'absent') {
             absent++;
-            absentDates.push(date + ' (DB)');
         }
     });
     
-    const simdi = new Date();
-    
-    // Öğrencinin ilk yoklama kaydının tarihini bul
     let firstAttDateStr = null;
     if (attendance && attendance.length > 0) {
-        // Tarihleri sırala
         const sortedAtt = [...attendance].sort((a, b) => a.date.localeCompare(b.date));
         firstAttDateStr = sortedAtt[0].date;
     }
 
-    // Devamsızlık hesaplamasını öğrencinin kayıt tarihinden veya ilk yoklama tarihinden başlat
-    let startDateStr = user?.created_at ? user.created_at.split(' ')[0] : projectStartDate;
+    let startDateStr = userCreatedAt ? getDatePart(userCreatedAt) : projectStartDate;
     if (firstAttDateStr && firstAttDateStr < startDateStr) {
-        startDateStr = firstAttDateStr; // Eğer kayıt tarihinden önce yoklama girilmişse oradan başla
+        startDateStr = firstAttDateStr;
     }
     if (startDateStr < projectStartDate) {
         startDateStr = projectStartDate;
@@ -179,18 +206,110 @@ const getStudentAnalytics = async (studentId) => {
         const dStr = `${d.getFullYear()}-${(d.getMonth() + 1).toString().padStart(2, '0')}-${d.getDate().toString().padStart(2, '0')}`;
         const gunAdi = trGunler[d.getDay()].toLowerCase();
         
-        // Eğer o gün yoklama kaydı YOKSA, tatil DEĞİLSE ve planlı günse devamsız say
         if (!attMap[dStr] && pDays.includes(gunAdi) && !holidays.includes(dStr)) {
             absent++;
-            absentDates.push(dStr + ' (Kayıt Yok)');
         }
         d.setDate(d.getDate() + 1);
     }
 
-    console.log(`[DEVAMSIZLIK ANALİZİ] Öğrenci ID: ${studentId} | Toplam Devamsızlık: ${absent}`);
-    console.log(`[DEVAMSIZLIK ANALİZİ] Devamsız Sayılan Günler: ${absentDates.join(', ')}`);
-
     return { attended, absent };
+};
+
+const getStudentAnalytics = async (studentId) => {
+    const [plans, attendance, user, holidayRows] = await Promise.all([
+        new Promise(resolve => db.all("SELECT day FROM fixed_plan WHERE user_id = ? AND status = 'approved'", [studentId], (err, rows) => resolve(rows || []))),
+        new Promise(resolve => db.all("SELECT date, status FROM attendance WHERE user_id = ? AND date >= '2026-01-01'", [studentId], (err, rows) => resolve(rows || []))),
+        new Promise(resolve => db.get("SELECT created_at FROM users WHERE id = ?", [studentId], (err, row) => resolve(row))),
+        new Promise(resolve => db.all("SELECT date FROM holidays", [], (err, rows) => resolve(rows || [])))
+    ]);
+    const holidays = holidayRows.map(h => h.date);
+    return calculateStudentStats(plans, attendance, user?.created_at, holidays);
+};
+
+const getBulkStudentAnalytics = async (studentIds, studentRows) => {
+    if (!studentIds || studentIds.length === 0) return { analytics: {}, plansByStudent: {}, attByStudent: {}, holidays: [] };
+
+    const placeholders = studentIds.map(() => '?').join(',');
+    const [holidayRows, planRows, attRows] = await Promise.all([
+        new Promise(resolve => db.all("SELECT date FROM holidays", [], (err, rows) => resolve(rows || []))),
+        new Promise(resolve => db.all(`SELECT user_id, day FROM fixed_plan WHERE user_id IN (${placeholders}) AND status = 'approved'`, studentIds, (err, rows) => resolve(rows || []))),
+        new Promise(resolve => db.all(`SELECT user_id, date, status FROM attendance WHERE user_id IN (${placeholders}) AND date >= '2026-01-01'`, studentIds, (err, rows) => resolve(rows || [])))
+    ]);
+    const holidays = holidayRows.map(h => h.date);
+
+    const plansByStudent = {};
+    studentIds.forEach(id => plansByStudent[id] = []);
+    planRows.forEach(row => {
+        plansByStudent[row.user_id].push((row.day || '').trim().toLowerCase());
+    });
+
+    const attByStudent = {};
+    studentIds.forEach(id => attByStudent[id] = []);
+    attRows.forEach(row => {
+        attByStudent[row.user_id].push(row);
+    });
+
+    const trGunler = ['Pazar', 'Pazartesi', 'Salı', 'Çarşamba', 'Perşembe', 'Cuma', 'Cumartesi'];
+    const projectStartDate = '2026-02-01';
+    const dun = new Date(); 
+    dun.setDate(dun.getDate() - 1);
+    dun.setHours(23, 59, 59, 999);
+
+    const analytics = {};
+
+    studentRows.forEach(student => {
+        const studentId = student.id;
+        const sPlans = plansByStudent[studentId] || [];
+        const sAtt = attByStudent[studentId] || [];
+        
+        const attMap = {};
+        let attended = 0;
+        let absent = 0;
+
+        sAtt.forEach(a => {
+            attMap[a.date] = a.status;
+        });
+
+        Object.entries(attMap).forEach(([date, status]) => {
+            if (date < projectStartDate) return;
+            if (['completed', 'present', 'attended', 'working'].includes(status)) {
+                attended++;
+            } else if (status === 'absent') {
+                absent++;
+            }
+        });
+
+        let firstAttDateStr = null;
+        if (sAtt.length > 0) {
+            const sortedAtt = [...sAtt].sort((a, b) => a.date.localeCompare(b.date));
+            firstAttDateStr = sortedAtt[0].date;
+        }
+
+        let startDateStr = student.created_at ? getDatePart(student.created_at) : projectStartDate;
+        if (firstAttDateStr && firstAttDateStr < startDateStr) {
+            startDateStr = firstAttDateStr;
+        }
+        if (startDateStr < projectStartDate) {
+            startDateStr = projectStartDate;
+        }
+
+        let d = new Date(startDateStr);
+        d.setHours(12, 0, 0, 0);
+
+        while (d <= dun) {
+            const dStr = `${d.getFullYear()}-${(d.getMonth() + 1).toString().padStart(2, '0')}-${d.getDate().toString().padStart(2, '0')}`;
+            const gunAdi = trGunler[d.getDay()].toLowerCase();
+            
+            if (!attMap[dStr] && sPlans.includes(gunAdi) && !holidays.includes(dStr)) {
+                absent++;
+            }
+            d.setDate(d.getDate() + 1);
+        }
+
+        analytics[studentId] = { attended, absent };
+    });
+
+    return { analytics, plansByStudent, attByStudent, holidays };
 };
 
 // ---------------------------------------------------------
@@ -412,17 +531,21 @@ app.get('/api/superadmin/settings', authenticateToken, authorizeRole('super_admi
     });
 });
 
-app.post('/api/superadmin/settings', authenticateToken, authorizeRole('super_admin'), (req, res) => {
+app.post('/api/superadmin/settings', authenticateToken, authorizeRole('super_admin'), async (req, res) => {
     const { settings } = req.body;
     if (!settings) return sendResponse(res, false, null, 'Veri eksik.', 400);
-    db.serialize(() => {
-        const stmt = db.prepare("INSERT OR REPLACE INTO system_settings (key, value) VALUES (?, ?)");
-        Object.entries(settings).forEach(([key, value]) => stmt.run([key, String(value)]));
-        stmt.finalize((err) => {
-            if (err) return sendResponse(res, false, null, 'Hata.', 500);
-            sendResponse(res, true);
-        });
-    });
+    try {
+        for (const [key, value] of Object.entries(settings)) {
+            await db.runPromise(
+                "INSERT INTO system_settings (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",
+                [key, String(value)]
+            );
+        }
+        sendResponse(res, true);
+    } catch (err) {
+        console.error("Settings save error:", err);
+        sendResponse(res, false, null, 'Ayarlar kaydedilemedi: ' + err.message, 500);
+    }
 });
 
 app.get('/api/superadmin/reports/payroll', authenticateToken, authorizeRole('super_admin'), (req, res) => {
@@ -508,64 +631,68 @@ app.get('/api/user/department', authenticateToken, (req, res) => {
 
 app.get('/api/user/stats', authenticateToken, async (req, res) => {
     try {
-        const stats = await getStudentAnalytics(req.user.id);
         const now = new Date();
         const year = now.getFullYear();
         const month = now.getMonth() + 1;
         const daysInMonth = new Date(year, month, 0).getDate();
-        const mStart = `${year}-${month.toString().padStart(2, '0')}-01`;
-        const mEnd = `${year}-${month.toString().padStart(2, '0')}-${daysInMonth}`;
         const bugunStr = now.toISOString().split('T')[0];
         const trGunler = ['Pazar', 'Pazartesi', 'Salı', 'Çarşamba', 'Perşembe', 'Cuma', 'Cumartesi'];
         const bugunName = trGunler[now.getDay()];
 
-        const [plans, att, user, completedTasks, dailyWageSetting, holidayRows] = await Promise.all([
-            new Promise(resolve => db.all("SELECT day FROM fixed_plan WHERE user_id = ? AND status='approved'", [req.user.id], (err, rows) => resolve(rows || []))),
-            new Promise(resolve => db.all("SELECT date, status FROM attendance WHERE user_id = ? AND date BETWEEN ? AND ?", [req.user.id, mStart, mEnd], (err, rows) => resolve(rows || []))),
+        const [plans, attendance, user, completedTasksRow, dailyWageSetting, holidayRows] = await Promise.all([
+            new Promise(resolve => db.all("SELECT day, hours FROM fixed_plan WHERE user_id = ? AND status='approved'", [req.user.id], (err, rows) => resolve(rows || []))),
+            new Promise(resolve => db.all("SELECT date, status, check_in, check_out FROM attendance WHERE user_id = ? AND date >= '2026-01-01'", [req.user.id], (err, rows) => resolve(rows || []))),
             new Promise(resolve => db.get("SELECT created_at FROM users WHERE id = ?", [req.user.id], (err, row) => resolve(row))),
-            new Promise(resolve => db.get("SELECT COUNT(*) as count FROM tasks WHERE (assigned_to = ? OR assigned_to IS NULL) AND status = 'approved'", [req.user.id], (err, row) => resolve(row?.count || 0))),
+            new Promise(resolve => db.get("SELECT COUNT(*) as count FROM tasks WHERE (assigned_to = ? OR assigned_to IS NULL) AND status = 'approved'", [req.user.id], (err, row) => resolve(row || { count: 0 }))),
             new Promise(resolve => db.get("SELECT value FROM system_settings WHERE key = 'daily_wage'", (err, row) => resolve(row?.value || '1375'))),
-            new Promise(resolve => db.all("SELECT date FROM holidays WHERE date BETWEEN ? AND ?", [mStart, mEnd], (err, rows) => resolve(rows || [])))
+            new Promise(resolve => db.all("SELECT date FROM holidays", [], (err, rows) => resolve(rows || [])))
         ]);
 
         const holidays = holidayRows.map(h => h.date);
+        const stats = calculateStudentStats(plans, attendance, user?.created_at, holidays);
 
         const pDays = plans.map(p => p.day.toLowerCase());
-        const attMap = {}; (att || []).forEach(a => attMap[a.date] = a.status);
-        const studentCreatedAt = user?.created_at ? user.created_at.split(' ')[0] : '2000-01-01';
+        const attMap = {}; 
+        attendance.forEach(a => attMap[a.date] = a.status);
+        const studentCreatedAt = user?.created_at ? getDatePart(user.created_at) : '2000-01-01';
 
         let monthAttended = 0, monthAbsent = 0;
         for (let d = 1; d <= daysInMonth; d++) {
-            const dateObj = new Date(year, month - 1, d);
             const dStr = `${year}-${month.toString().padStart(2, '0')}-${d.toString().padStart(2, '0')}`;
+            const dateObj = new Date(year, month - 1, d);
             const dName = trGunler[dateObj.getDay()].toLowerCase();
             
             if (attMap[dStr]) { 
                 const s = attMap[dStr];
-                if (s === 'completed' || s === 'present' || s === 'attended' || s === 'working') monthAttended++; 
-                else monthAbsent++; 
+                if (['completed', 'present', 'attended', 'working'].includes(s)) {
+                    monthAttended++; 
+                } else {
+                    monthAbsent++; 
+                }
             }
-            else if (dStr < studentCreatedAt) continue;
+            else if (dStr < studentCreatedAt) {
+                continue;
+            }
             else if (pDays.includes(dName) && dStr < bugunStr && !holidays.includes(dStr)) { 
                 monthAbsent++; 
             }
         }
 
-        db.get("SELECT hours FROM fixed_plan WHERE user_id = ? AND day = ? AND status = 'approved'", [req.user.id, bugunName], (err, planRow) => {
-            db.get("SELECT check_in, check_out FROM attendance WHERE user_id = ? AND date = ?", [req.user.id, bugunStr], (err, attRow) => {
-                sendResponse(res, true, {
-                    total_attended: stats.attended,
-                    total_absent: stats.absent,
-                    month_attended: monthAttended,
-                    month_absent: monthAbsent,
-                    total_completed_tasks: completedTasks,
-                    today_plan: planRow ? JSON.parse(planRow.hours) : null,
-                    today_attendance: attRow || null,
-                    daily_wage: parseInt(dailyWageSetting)
-                });
-            });
+        const todayPlanRow = plans.find(p => p.day.toLowerCase() === bugunName.toLowerCase());
+        const todayPlan = todayPlanRow ? JSON.parse(todayPlanRow.hours) : null;
+        
+        const todayAtt = attendance.find(a => a.date === bugunStr) || null;
+
+        sendResponse(res, true, {
+            total_attended: stats.attended,
+            total_absent: stats.absent,
+            month_attended: monthAttended,
+            month_absent: monthAbsent,
+            total_completed_tasks: completedTasksRow.count,
+            today_plan: todayPlan,
+            today_attendance: todayAtt ? { check_in: todayAtt.check_in, check_out: todayAtt.check_out } : null,
+            daily_wage: parseInt(dailyWageSetting)
         });
-        return;
     } catch (err) {
         sendResponse(res, false, null, err.message, 500);
     }
@@ -588,13 +715,31 @@ app.get('/api/user/students', authenticateToken, (req, res) => {
 });
 
 app.get('/api/dept/students/overview', authenticateToken, authorizeRole('manager'), async (req, res) => {
-    db.all("SELECT id, name, email, is_terminated, program_duration_months FROM users WHERE dept_id = ? AND role = 'student' ORDER BY name", [req.user.dept_id], async (err, students) => {
+    db.all("SELECT id, name, email, is_terminated, program_duration_months, created_at FROM users WHERE dept_id = ? AND role = 'student' ORDER BY name", [req.user.dept_id], async (err, students) => {
         if (err || !students) return sendResponse(res, false, null, 'Öğrenci özetleri alınamadı.', 500);
-        const results = await Promise.all(students.map(async (s) => {
-            const stats = await getStudentAnalytics(s.id);
-            return { ...s, attended_days: stats.attended, absent_days: stats.absent };
-        }));
-        sendResponse(res, true, { students: results });
+        
+        try {
+            const studentIds = students.map(s => s.id);
+            const { analytics: bulkStats } = await getBulkStudentAnalytics(studentIds, students);
+            
+            const results = students.map(s => {
+                const stats = bulkStats[s.id] || { attended: 0, absent: 0 };
+                return { 
+                    id: s.id,
+                    name: s.name,
+                    email: s.email,
+                    is_terminated: s.is_terminated,
+                    program_duration_months: s.program_duration_months,
+                    created_at: s.created_at,
+                    attended_days: stats.attended, 
+                    absent_days: stats.absent 
+                };
+            });
+            sendResponse(res, true, { students: results });
+        } catch (error) {
+            console.error("Overview Hatası:", error);
+            sendResponse(res, false, null, 'Öğrenci özetleri alınamadı.', 500);
+        }
     });
 });
 
@@ -606,49 +751,79 @@ app.get('/api/timesheet/manager', authenticateToken, authorizeRole('manager'), a
     const bugunStr = new Date().toISOString().split('T')[0];
     db.all("SELECT id, name, is_terminated, program_duration_months, created_at FROM users WHERE dept_id = ? AND role = 'student' ORDER BY name", [req.user.dept_id], async (err, students) => {
         if (err || !students) return sendResponse(res, false, null, 'Puantaj verileri alınamadı.', 500);
-        const results = await Promise.all(students.map(async (s) => {
-            const [plans, att, overall] = await Promise.all([
-                new Promise(res => db.all("SELECT day FROM fixed_plan WHERE user_id = ? AND status='approved'", [s.id], (e, r) => res(r || []))),
-                new Promise(res => db.all("SELECT date, status FROM attendance WHERE user_id = ? AND date BETWEEN ? AND ?", [s.id, mStart, mEnd], (e, r) => res(r || []))),
-                getStudentAnalytics(s.id)
-            ]);
-            const pDays = plans.map(p => (p.day || '').toLowerCase()), attMap = {}; 
-            att.forEach(a => attMap[a.date] = a.status);
-            
-            const studentCreatedAt = s.created_at ? s.created_at.split(' ')[0] : '2000-01-01';
-            const days = []; let monthAttended = 0, monthAbsent = 0;
-
-            for (let d = 1; d <= daysInMonth; d++) {
-                const dateObj = new Date(year, month - 1, d);
-                const dStr = `${year}-${month.toString().padStart(2, '0')}-${d.toString().padStart(2, '0')}`;
-                const dName = trGunler[dateObj.getDay()].toLowerCase();
-                let status = 'none';
-                
-                if (attMap[dStr]) { 
-                    const attStatus = attMap[dStr];
-                    if (attStatus === 'completed' || attStatus === 'present' || attStatus === 'attended' || attStatus === 'working') {
-                        status = 'attended';
-                        monthAttended++;
-                    } else {
-                        status = 'absent';
-                        monthAbsent++;
-                    }
-                }
-                else if (dStr < studentCreatedAt) {
-                    status = 'none'; // Kayıt öncesi
-                }
-                else if (pDays.includes(dName) && dStr < bugunStr) { 
-                    status = 'absent'; 
-                    monthAbsent++; 
-                }
-                else if (pDays.includes(dName)) {
-                    status = 'planned';
-                }
-                days.push({ day: d, status });
+        
+        try {
+            const studentIds = students.map(s => s.id);
+            if (studentIds.length === 0) {
+                return sendResponse(res, true, { timesheet: [] });
             }
-            return { student_id: s.id, student_name: s.name, is_terminated: s.is_terminated, program_duration_months: s.program_duration_months, days, total_attended_month: monthAttended, total_absent_month: monthAbsent, total_overall_absent: overall.absent };
-        }));
-        sendResponse(res, true, { timesheet: results });
+
+            const { analytics: bulkStats, plansByStudent, attByStudent: rawAttByStudent } = await getBulkStudentAnalytics(studentIds, students);
+
+            const attByStudent = {};
+            studentIds.forEach(id => {
+                attByStudent[id] = {};
+                const sAtt = rawAttByStudent[id] || [];
+                sAtt.forEach(row => {
+                    if (row.date >= mStart && row.date <= mEnd) {
+                        attByStudent[id][row.date] = row.status;
+                    }
+                });
+            });
+
+            const results = students.map((s) => {
+                const pDays = plansByStudent[s.id] || [];
+                const attMap = attByStudent[s.id] || {};
+                const overall = bulkStats[s.id] || { attended: 0, absent: 0 };
+                
+                const studentCreatedAt = s.created_at ? getDatePart(s.created_at) : '2000-01-01';
+                const days = []; 
+                let monthAttended = 0, monthAbsent = 0;
+
+                for (let d = 1; d <= daysInMonth; d++) {
+                    const dateObj = new Date(year, month - 1, d);
+                    const dStr = `${year}-${month.toString().padStart(2, '0')}-${d.toString().padStart(2, '0')}`;
+                    const dName = trGunler[dateObj.getDay()].toLowerCase();
+                    let status = 'none';
+                    
+                    if (attMap[dStr]) { 
+                        const attStatus = attMap[dStr];
+                        if (attStatus === 'completed' || attStatus === 'present' || attStatus === 'attended' || attStatus === 'working') {
+                            status = 'attended';
+                            monthAttended++;
+                        } else {
+                            status = 'absent';
+                            monthAbsent++;
+                        }
+                    }
+                    else if (dStr < studentCreatedAt) {
+                        status = 'none'; // Kayıt öncesi
+                    }
+                    else if (pDays.includes(dName) && dStr < bugunStr) { 
+                        status = 'absent'; 
+                        monthAbsent++; 
+                    }
+                    else if (pDays.includes(dName)) {
+                        status = 'planned';
+                    }
+                    days.push({ day: d, status });
+                }
+                return { 
+                    student_id: s.id, 
+                    student_name: s.name, 
+                    is_terminated: s.is_terminated, 
+                    program_duration_months: s.program_duration_months, 
+                    days, 
+                    total_attended_month: monthAttended, 
+                    total_absent_month: monthAbsent, 
+                    total_overall_absent: overall.absent 
+                };
+            });
+            sendResponse(res, true, { timesheet: results });
+        } catch (error) {
+            console.error("Manager Timesheet Hatası:", error);
+            sendResponse(res, false, null, 'Puantaj verileri alınamadı.', 500);
+        }
     });
 });
 
@@ -845,15 +1020,49 @@ app.post('/api/plan/student', authenticateToken, authorizeRole('student'), (req,
     if (!Array.isArray(plan_data) || activePlanDays.length > 3 || !herGunTam75 || ![7.5, 15.0, 22.5].includes(toplamSaat)) {
         return sendResponse(res, false, null, 'Her seçilen gün tam 7.5 saat olmalıdır. Toplam 7.5, 15 veya 22.5 saat çalışılabilir.', 400);
     }
-    db.serialize(() => {
-        db.run("DELETE FROM fixed_plan WHERE user_id = ? AND status IN ('pending', 'rejected')", [req.user.id]);
-        const stmt = db.prepare("INSERT INTO fixed_plan (user_id, dept_id, day, hours, status) VALUES (?, ?, ?, ?, 'pending')");
-        activePlanDays.forEach(item => stmt.run([req.user.id, req.user.dept_id, item.day, JSON.stringify(item.slots)]));
-        stmt.finalize(() => {
-            // İsmi veritabanından çekelim (Token'da yoksa bile garanti olsun)
-            db.get("SELECT name FROM users WHERE id = ?", [req.user.id], (err, student) => {
-                const studentName = student?.name || 'Bir öğrenci';
-                
+    
+    // Ders programı matrisini kontrol ederek 18:00 sonrası kısıtlamasını doğrula
+    db.get("SELECT name, course_schedule_matrix FROM users WHERE id = ?", [req.user.id], (err, userRow) => {
+        if (err || !userRow) {
+            return sendResponse(res, false, null, 'Kullanıcı bulunamadı.', 404);
+        }
+        let matrix = {};
+        try {
+            matrix = typeof userRow.course_schedule_matrix === 'string'
+                ? JSON.parse(userRow.course_schedule_matrix || '{}')
+                : (userRow.course_schedule_matrix || {});
+        } catch (e) {
+            matrix = {};
+        }
+
+        // Akşam dersi olmayan günde 18:00 sonrası engelleme doğrulaması
+        for (const item of activePlanDays) {
+            const day = item.day;
+            const slots = item.slots;
+            const hasSlotAfter18 = slots.some(slotId => {
+                const time = SLOT_TIMES[slotId];
+                return time && time.start >= 1080;
+            });
+            if (hasSlotAfter18) {
+                const hasMorningClasses = ['S-1', 'S-2', 'S-3', 'S-4', 'S-5', 'S-6', 'S-7', 'S-8'].some(
+                    sId => matrix?.[day]?.[sId] === true
+                );
+                if (!hasMorningClasses) {
+                    return sendResponse(res, false, null, `${day} günü gündüz dersiniz olmadığı (boş gün veya akşam öğrencisi olduğunuz) için saat 18:00'den sonrası için planlama yapamazsınız.`, 400);
+                }
+            }
+        }
+
+        db.serialize(async () => {
+            try {
+                await db.runPromise("DELETE FROM fixed_plan WHERE user_id = ? AND status IN ('pending', 'rejected')", [req.user.id]);
+                for (const item of activePlanDays) {
+                    await db.runPromise(
+                        "INSERT INTO fixed_plan (user_id, dept_id, day, hours, status) VALUES ($1, $2, $3, $4, 'pending')",
+                        [req.user.id, req.user.dept_id, item.day, JSON.stringify(item.slots)]
+                    );
+                }
+                const studentName = userRow.name || 'Bir öğrenci';
                 db.get("SELECT id FROM users WHERE dept_id = ? AND role = 'manager' LIMIT 1", [req.user.dept_id], (err, manager) => {
                     if (manager) {
                         const birDakikaOnce = new Date(Date.now() - 60000).toISOString();
@@ -866,7 +1075,10 @@ app.post('/api/plan/student', authenticateToken, authorizeRole('student'), (req,
                     }
                     sendResponse(res, true);
                 });
-            });
+            } catch (runErr) {
+                console.error("Plan save error:", runErr);
+                sendResponse(res, false, null, 'Plan kaydedilemedi: ' + runErr.message, 500);
+            }
         });
     });
 });
@@ -1111,21 +1323,22 @@ app.get('/api/timesheet/student', authenticateToken, authorizeRole('student'), a
     const trGunler = ['Pazar', 'Pazartesi', 'Salı', 'Çarşamba', 'Perşembe', 'Cuma', 'Cumartesi'];
     const bugunStr = new Date().toISOString().split('T')[0];
     try {
-        const [plans, att, overall, dailyWageRow, holidayRows, user] = await Promise.all([
-            new Promise(res => db.all("SELECT day FROM fixed_plan WHERE user_id = ? AND status='approved'", [studentId], (e, r) => res(r || []))),
-            new Promise(res => db.all("SELECT date, status FROM attendance WHERE user_id = ? AND date BETWEEN ? AND ?", [studentId, mStart, mEnd], (e, r) => res(r || []))),
-            getStudentAnalytics(studentId),
-            new Promise(res => db.get("SELECT value FROM system_settings WHERE key = 'daily_wage'", (e, r) => res(r))),
-            new Promise(res => db.all("SELECT date FROM holidays WHERE date BETWEEN ? AND ?", [mStart, mEnd], (e, r) => res(r || []))),
-            new Promise(res => db.get("SELECT created_at FROM users WHERE id = ?", [studentId], (e, r) => res(r)))
+        const [plans, allAttendance, user, dailyWageRow, holidayRows] = await Promise.all([
+            new Promise(resolve => db.all("SELECT day FROM fixed_plan WHERE user_id = ? AND status='approved'", [studentId], (e, r) => resolve(r || []))),
+            new Promise(resolve => db.all("SELECT date, status FROM attendance WHERE user_id = ? AND date >= '2026-01-01'", [studentId], (e, r) => resolve(r || []))),
+            new Promise(resolve => db.get("SELECT created_at FROM users WHERE id = ?", [studentId], (e, r) => resolve(r))),
+            new Promise(resolve => db.get("SELECT value FROM system_settings WHERE key = 'daily_wage'", (e, r) => resolve(r))),
+            new Promise(resolve => db.all("SELECT date FROM holidays", [], (e, r) => resolve(r || [])))
         ]);
 
         const rate = parseInt(dailyWageRow?.value || '1375');
         const holidays = holidayRows.map(h => h.date);
-        const pDays = plans.map(p => p.day.toLowerCase()), attMap = {}; 
-        att.forEach(a => attMap[a.date] = a.status);
+        const overall = calculateStudentStats(plans, allAttendance, user?.created_at, holidays);
 
-        const studentCreatedAt = user?.created_at ? user.created_at.split(' ')[0] : '2000-01-01';
+        const pDays = plans.map(p => p.day.toLowerCase()), attMap = {}; 
+        allAttendance.forEach(a => attMap[a.date] = a.status);
+
+        const studentCreatedAt = user?.created_at ? getDatePart(user.created_at) : '2000-01-01';
         const days = []; 
         let monthAttended = 0, monthAbsent = 0;
 
@@ -1324,6 +1537,10 @@ app.get('/api/superadmin/departments', authenticateToken, authorizeRole('super_a
 
 app.post('/api/superadmin/departments', authenticateToken, authorizeRole('super_admin'), (req, res) => {
     const { name, open_time, close_time, student_capacity } = req.body;
+    const validation = validateDepartmentHours(open_time, close_time);
+    if (!validation.valid) {
+        return sendResponse(res, false, null, validation.error, 400);
+    }
     db.run("INSERT INTO departments (name, open_time, close_time, student_capacity) VALUES (?, ?, ?, ?)", 
         [name, open_time, close_time, student_capacity || 0], function(err) {
         if (err) return sendResponse(res, false, null, 'Birim oluşturulamadı.', 500);
@@ -1333,6 +1550,10 @@ app.post('/api/superadmin/departments', authenticateToken, authorizeRole('super_
 
 app.put('/api/superadmin/departments/:id', authenticateToken, authorizeRole('super_admin'), (req, res) => {
     const { name, open_time, close_time, student_capacity } = req.body;
+    const validation = validateDepartmentHours(open_time, close_time);
+    if (!validation.valid) {
+        return sendResponse(res, false, null, validation.error, 400);
+    }
     db.run("UPDATE departments SET name = ?, open_time = ?, close_time = ?, student_capacity = ? WHERE id = ?", 
         [name, open_time, close_time, student_capacity, req.params.id], function(err) {
         if (err) return sendResponse(res, false, null, 'Birim güncellenemedi.', 500);

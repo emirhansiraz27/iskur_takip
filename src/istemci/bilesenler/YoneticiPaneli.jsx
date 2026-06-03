@@ -3,6 +3,13 @@ import api from '../api';
 import { calculateDailyHours } from './OgrenciPlanlayici';
 
 const DAYS_OF_WEEK = ['Pazartesi', 'Salı', 'Çarşamba', 'Perşembe', 'Cuma'];
+const TURKISH_DAY_ABBR = {
+  'Pazartesi': 'PZT',
+  'Salı': 'SAL',
+  'Çarşamba': 'ÇAR',
+  'Perşembe': 'PER',
+  'Cuma': 'CUM'
+};
 const COURSE_SLOTS = [
   { id: 'S-1',  label: '08:30 - 09:15' },
   { id: 'S-2',  label: '09:25 - 10:10' },
@@ -179,7 +186,7 @@ function YoneticiPaneli({ user }) {
                       <div className="text-[10px] font-black text-slate-500 uppercase tracking-widest text-center py-3 bg-slate-50 border border-slate-100 rounded-2xl">Saat</div>
                       {DAYS_OF_WEEK.map(gun => (
                         <div key={gun} className="text-[10px] font-black text-slate-500 uppercase tracking-widest text-center py-3 bg-slate-50 border border-slate-100 rounded-2xl">
-                          {gun.substring(0, 3)}
+                          {TURKISH_DAY_ABBR[gun]}
                         </div>
                       ))}
                     </div>
@@ -417,7 +424,7 @@ function YoneticiPaneli({ user }) {
                   <div className="grid grid-cols-6 gap-2">
                     <div className="text-[9px] font-black text-slate-400 uppercase text-center py-2 bg-white border border-slate-100 rounded-lg">SAAT</div>
                     {DAYS_OF_WEEK.map(gun => (
-                      <div key={gun} className="text-[9px] font-black text-slate-400 uppercase text-center py-2 bg-white border border-slate-100 rounded-lg">{gun.substring(0, 3)}</div>
+                      <div key={gun} className="text-[9px] font-black text-slate-400 uppercase text-center py-2 bg-white border border-slate-100 rounded-lg">{TURKISH_DAY_ABBR[gun]}</div>
                     ))}
                   </div>
                   <div className="mt-2 space-y-2 max-h-[400px] overflow-y-auto custom-scrollbar">

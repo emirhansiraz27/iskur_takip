@@ -1,6 +1,20 @@
 import React, { useState, useEffect } from 'react';
 import api from '../../api';
 
+const OPEN_TIME_OPTIONS = [
+  '07:00', '07:30', '08:00', '08:30', '09:00', '09:25', 
+  '10:20', '11:15', '13:00', '13:55', '14:50', '15:00', 
+  '15:45', '16:00', '17:00', '17:55', '18:50', '19:45', 
+  '20:40', '21:35', '22:30'
+];
+
+const CLOSE_TIME_OPTIONS = [
+  '12:00', '13:00', '13:45', '14:40', '15:35', '16:30', 
+  '17:00', '17:30', '17:45', '18:00', '18:30', '18:40', 
+  '19:35', '20:30', '21:00', '21:25', '22:00', '22:20', 
+  '23:00', '23:15'
+];
+
 function BirimAyarlari() {
   const [departments, setDepartments] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -106,21 +120,27 @@ function BirimAyarlari() {
                                </div>
                                <div>
                                  <label className="block text-[10px] font-black text-slate-400 uppercase mb-1">Açılış</label>
-                                 <input 
-                                   type="time" 
+                                 <select 
                                    className="w-full h-11 px-4 bg-white border border-slate-200 rounded-xl outline-none focus:border-primary font-bold text-sm"
                                    value={editForm.open_time}
                                    onChange={e => setEditForm({...editForm, open_time: e.target.value})}
-                                 />
+                                 >
+                                   {OPEN_TIME_OPTIONS.map(time => (
+                                     <option key={time} value={time}>{time}</option>
+                                   ))}
+                                 </select>
                                </div>
                                <div>
                                  <label className="block text-[10px] font-black text-slate-400 uppercase mb-1">Kapanış</label>
-                                 <input 
-                                   type="time" 
+                                 <select 
                                    className="w-full h-11 px-4 bg-white border border-slate-200 rounded-xl outline-none focus:border-primary font-bold text-sm"
                                    value={editForm.close_time}
                                    onChange={e => setEditForm({...editForm, close_time: e.target.value})}
-                                 />
+                                 >
+                                   {CLOSE_TIME_OPTIONS.map(time => (
+                                     <option key={time} value={time}>{time}</option>
+                                   ))}
+                                 </select>
                                </div>
                              </div>
                              <div className="flex justify-end gap-3">
